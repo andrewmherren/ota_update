@@ -22,13 +22,12 @@ OTAUpdateModule otaUpdateModule; // NOSONAR
 // Constructor & Lifecycle
 // ===========================================================================
 
-OTAUpdateModule::OTAUpdateModule() 
-    : platformProvider(nullptr),
-      autoCheckInterval(3600),
-      lastCheckTime(0),
+OTAUpdateModule::OTAUpdateModule()
+    : platformProvider(nullptr), autoCheckInterval(3600), lastCheckTime(0),
       autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK)
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
-      , httpsCapable(false)
+      ,
+      httpsCapable(false)
 #endif
 {
 #ifndef STANDALONE_TESTS
@@ -44,12 +43,11 @@ OTAUpdateModule::OTAUpdateModule()
 }
 
 OTAUpdateModule::OTAUpdateModule(IWebPlatformProvider *provider)
-    : platformProvider(provider),
-      autoCheckInterval(3600),
-      lastCheckTime(0),
+    : platformProvider(provider), autoCheckInterval(3600), lastCheckTime(0),
       autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK)
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
-      , httpsCapable(false)
+      ,
+      httpsCapable(false)
 #endif
 {
 #if OTA_AUTH_MODE == SHARED_KEY
@@ -254,17 +252,20 @@ bool OTAUpdateModule::checkForUpdates() {
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
 bool OTAUpdateModule::fetchManifest() {
   // Build manifest URL with authentication (returns std::string)
-  std::string urlStdStr = OTACore::buildManifestUrl(
-      std::string(OTA_MANIFEST_URL),
-      OTA_AUTH_MODE
+  std::string urlStdStr =
+      OTACore::buildManifestUrl(std::string(OTA_MANIFEST_URL), OTA_AUTH_MODE
 #if OTA_AUTH_MODE == SHARED_KEY
-      , std::string(sharedKey.c_str())
+                                ,
+                                std::string(sharedKey.c_str())
 #elif OTA_AUTH_MODE == DEVICE_SPECIFIC
-      , "", std::string(deviceId.c_str()), std::string(deviceKey.c_str())
+                                ,
+                                "", std::string(deviceId.c_str()),
+                                std::string(deviceKey.c_str())
 #else
-      , "", "", ""
+                                ,
+                                "", "", ""
 #endif
-  );
+      );
 
   String url = String(urlStdStr.c_str());
   DEBUG_PRINTF("OTA: Fetching manifest from %s\n", url.c_str());
@@ -285,8 +286,7 @@ bool OTAUpdateModule::fetchManifest() {
 
   // Parse manifest using core logic (convert Arduino String to std::string)
   manifestData = OTACore::parseManifest(
-      std::string(payload.c_str()), 
-      std::string(currentVersion.c_str()), 
+      std::string(payload.c_str()), std::string(currentVersion.c_str()),
 #ifdef OTA_DEVELOPMENT_MODE
       true // Allow downgrades in development mode
 #else
@@ -312,14 +312,14 @@ bool OTAUpdateModule::installUpdate(const String &version) {
   }
 
   if (!manifestData.isValid()) {
-    updateStatus(UpdateStatus::ERROR, "No manifest available. Run check for updates first.");
+    updateStatus(UpdateStatus::ERROR,
+                 "No manifest available. Run check for updates first.");
     return false;
   }
 
   // Use core logic to select the best version (returns version string)
   std::string selectedVersionStr = OTACore::selectVersion(
-      manifestData,
-      std::string(version.c_str()),
+      manifestData, std::string(version.c_str()),
       std::string(currentVersion.c_str()),
       true // Allow major updates (can be made configurable)
   );
@@ -351,22 +351,24 @@ bool OTAUpdateModule::installUpdate(const String &version) {
 #else
   // In native tests, cannot actually install
   DEBUG_PRINTLN("OTA: installUpdate not available in native tests");
-  updateStatus(UpdateStatus::ERROR, "Installation not available in test environment");
+  updateStatus(UpdateStatus::ERROR,
+               "Installation not available in test environment");
   return false;
 #endif
 }
 
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
 bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
-  updateStatus(UpdateStatus::DOWNLOADING,
-               "Downloading firmware " + String(version.version.c_str()) + "...", 0);
+  updateStatus(
+      UpdateStatus::DOWNLOADING,
+      "Downloading firmware " + String(version.version.c_str()) + "...", 0);
 
   DEBUG_PRINTF("OTA: Downloading %s from %s\n", version.version.c_str(),
                version.url.c_str());
 
   httpClient.begin(String(version.url.c_str()));
   httpClient.setTimeout(30000); // 30 second timeout
-  
+
   // TODO: Add certificate validation for HTTPS
 
   int httpCode = httpClient.GET();
@@ -381,7 +383,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
   int contentLength = httpClient.getSize();
   if (contentLength <= 0 || contentLength > 10 * 1024 * 1024) { // Max 10MB
-    String errorMsg = contentLength <= 0 ? "Invalid content length" : "Firmware too large";
+    String errorMsg =
+        contentLength <= 0 ? "Invalid content length" : "Firmware too large";
     updateStatus(UpdateStatus::ERROR, errorMsg);
     storeUpdateHistory(String(version.version.c_str()), false, errorMsg);
     httpClient.end();
@@ -390,7 +393,7 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
   // Validate content length matches manifest (if provided)
   if (version.size_bytes > 0 && (uint32_t)contentLength != version.size_bytes) {
-    DEBUG_PRINTF("OTA: Size mismatch - expected %u, got %d\n", 
+    DEBUG_PRINTF("OTA: Size mismatch - expected %u, got %d\n",
                  version.size_bytes, contentLength);
     String errorMsg = "Size mismatch with manifest";
     updateStatus(UpdateStatus::ERROR, errorMsg);
@@ -402,7 +405,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
   currentStatus.total = contentLength;
 
   // Check available OTA partition space
-  const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t *update_partition =
+      esp_ota_get_next_update_partition(NULL);
   if (update_partition == nullptr) {
     String errorMsg = "No OTA partition available";
     updateStatus(UpdateStatus::ERROR, errorMsg);
@@ -441,7 +445,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
   uint8_t buffer[1024];
   bool writeError = false;
 
-  while (httpClient.connected() && written < (size_t)contentLength && !writeError) {
+  while (httpClient.connected() && written < (size_t)contentLength &&
+         !writeError) {
     size_t available = stream->available();
     if (available) {
       size_t bytesToRead = min(available, sizeof(buffer));
@@ -463,7 +468,7 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
       written += bytesRead;
       int progress = (written * 100) / contentLength;
-      
+
       // Throttle status updates to avoid flooding
       if (progress != currentStatus.progress) {
         updateStatus(UpdateStatus::INSTALLING,
@@ -490,7 +495,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
   // Check for incomplete download
   if (written != (size_t)contentLength) {
     mbedtls_sha256_free(&sha256_ctx);
-    String errorMsg = "Incomplete download: " + String(written) + "/" + String(contentLength);
+    String errorMsg =
+        "Incomplete download: " + String(written) + "/" + String(contentLength);
     updateStatus(UpdateStatus::ERROR, errorMsg);
     storeUpdateHistory(String(version.version.c_str()), false, errorMsg);
     Update.abort();
@@ -509,10 +515,11 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
   }
   hashStr[64] = '\0';
 
-  // Verify SHA256 hash matches manifest (convert std::string to Arduino String for comparison)
+  // Verify SHA256 hash matches manifest (convert std::string to Arduino String
+  // for comparison)
   String expectedHash = String(version.sha256.c_str());
   if (!expectedHash.equalsIgnoreCase(hashStr)) {
-    String errorMsg = "SHA256 verification failed - expected: " + expectedHash + 
+    String errorMsg = "SHA256 verification failed - expected: " + expectedHash +
                       ", got: " + String(hashStr);
     DEBUG_PRINTLN(errorMsg);
     updateStatus(UpdateStatus::ERROR, "Hash verification failed");
@@ -525,7 +532,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
   // Finalize update
   if (!Update.end(true)) { // true = set new firmware as boot partition
-    String errorMsg = "Update finalization failed: " + String(Update.errorString());
+    String errorMsg =
+        "Update finalization failed: " + String(Update.errorString());
     updateStatus(UpdateStatus::ERROR, "Finalization failed");
     storeUpdateHistory(String(version.version.c_str()), false, errorMsg);
     return false;
@@ -536,7 +544,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
   updateStatus(UpdateStatus::COMPLETE, "Update completed! Rebooting...", 100);
 
-  DEBUG_PRINTF("OTA: Successfully installed version %s\n", version.version.c_str());
+  DEBUG_PRINTF("OTA: Successfully installed version %s\n",
+               version.version.c_str());
 
   // Schedule reboot
   delay(2000);
@@ -560,7 +569,7 @@ bool OTAUpdateModule::verifyFirmware(const uint8_t *data, size_t length,
 
   // Compare with expected hash (case-insensitive)
   bool matches = expectedHash.equalsIgnoreCase(hashStr);
-  
+
   if (!matches) {
     DEBUG_PRINTF("OTA: Hash mismatch - expected: %s, got: %s\n",
                  expectedHash.c_str(), hashStr);
@@ -636,7 +645,7 @@ void OTAUpdateModule::installSpecificHandler(WebRequest &req,
 
   if (version.isEmpty()) {
     res.setStatus(400);
-    JsonResponseBuilder::createResponse(res, [&](JsonObject &json) {
+    respondJson(res, [&](JsonObject &json) {
       json["success"] = false;
       json["error"] = "Version parameter required";
     });
@@ -645,7 +654,7 @@ void OTAUpdateModule::installSpecificHandler(WebRequest &req,
 
   bool success = installUpdate(version);
 
-  JsonResponseBuilder::createResponse(res, [&](JsonObject &json) {
+  respondJson(res, [&](JsonObject &json) {
     json["success"] = success;
     json["message"] =
         success ? "Installing version " + version : currentStatus.message;
