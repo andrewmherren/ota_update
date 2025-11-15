@@ -233,6 +233,7 @@ class OTAUpdateManager {
             const response = await AuthUtils.fetch(this.baseUrl + '/api/progress');
             const data = await response.json();
             
+            console.log('OTA Progress Update:', data);
             this.updateProgressDisplay(data);
             
             // Stop polling if installation is complete or failed
