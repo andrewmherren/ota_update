@@ -1,0 +1,63 @@
+# PlatformIO build artifacts
+.pio/
+.vscode
+
+# Compilation artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# IDE files
+.vscode/
+*.code-workspace
+.idea/
+*.sublime-*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.cache
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Certificate files (if sensitive)
+*.pem
+*.key
+*.crt
+
+# Build directories
+build/
+dist/
+bin/
+obj/
+
+# Auto-generated files
+include/version_autogen.h
+
+# Custom
+lib/*
+src/server_*.pem
+src/server_*.der
+LOCAL_*
+.continue/
+compile_commands.json
+.coverage/

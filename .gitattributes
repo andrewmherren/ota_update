@@ -1,0 +1,13 @@
+# Exclude development-only folders from source archives (GitHub release/ZIP)
+# This prevents PlatformIO and other package managers from downloading these
+# when users install the library via Git URL.
+
+/.github export-ignore
+/test export-ignore
+/tools export-ignore
+
+# Common docs/examples you may want to exclude as well
+/examples export-ignore
+/docs export-ignore
+
+/cloudformation export-ignore
