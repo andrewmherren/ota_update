@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "OTA Infrastructure - SHARED_KEY mode with CloudFront CDN for production"
+
+Parameters:
+  ProductName:
+    Type: String
+    Description: Product identifier for firmware (used in bucket naming)
+    Default: "my-iot-device"
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
+  SharedKey:
+    Type: String
+    Description: "Shared access key that devices will use"
+    MinLength: 8
+    MaxLength: 64
+    NoEcho: true
+    ConstraintDescription: "Must be 8-64 characters"
+
+Resources:
+  # S3 bucket for firmware storage
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProductName}-firmware-shared-prod-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+          - Id: DeleteIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "HEAD"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # Lambda function for shared key validation
+  SharedKeyValidationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProductName}-shared-key-validation"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt SharedKeyValidationRole.Arn
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref FirmwareBucket
+          SHARED_KEY: !Ref SharedKey
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from urllib.parse import parse_qs
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              try:
+                  # Extract key from query parameters
+                  query_params = event.get('queryStringParameters') or {}
+                  provided_key = query_params.get('key')
+                  
+                  expected_key = os.environ['SHARED_KEY']
+                  
+                  if provided_key != expected_key:
+                      return {
+                          'statusCode': 403,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Content-Type': 'application/json'
+                          },
+                          'body': json.dumps({
+                              'error': 'Invalid or missing access key'
+                          })
+                      }
+                  
+                  # Key is valid, return presigned URL
+                  bucket_name = os.environ['BUCKET_NAME']
+                  object_key = event['pathParameters']['proxy']
+                  
+                  try:
+                      url = s3.generate_presigned_url(
+                          'get_object',
+                          Params={'Bucket': bucket_name, 'Key': object_key},
+                          ExpiresIn=3600  # 1 hour expiration
+                      )
+                      
+                      return {
+                          'statusCode': 302,
+                          'headers': {
+                              'Location': url,
+                              'Access-Control-Allow-Origin': '*'
+                          }
+                      }
+                  
+                  except Exception as s3_error:
+                      return {
+                          'statusCode': 404,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Content-Type': 'application/json'
+                          },
+                          'body': json.dumps({
+                              'error': 'File not found'
+                          })
+                      }
+                      
+              except Exception as e:
+                  print(f'Error: {str(e)}')
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({
+                          'error': 'Internal server error'
+                      })
+                  }
+
+  # IAM role for Lambda function
+  SharedKeyValidationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProductName}-shared-key-validation-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+
+  # API Gateway for key validation
+  SharedKeyAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${ProductName}-shared-key-api"
+      Description: "Shared key validation API for OTA updates"
+      BinaryMediaTypes:
+        - "*/*"
+
+  # API Gateway proxy resource
+  SharedKeyProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SharedKeyAPI
+      ParentId: !GetAtt SharedKeyAPI.RootResourceId
+      PathPart: "{proxy+}"
+
+  # API Gateway method
+  SharedKeyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SharedKeyAPI
+      ResourceId: !Ref SharedKeyProxyResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SharedKeyValidationFunction.Arn}/invocations"
+
+  # Permission for API Gateway to invoke Lambda
+  APIGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SharedKeyValidationFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SharedKeyAPI}/*/*/*"
+
+  # API Gateway deployment
+  SharedKeyDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: SharedKeyMethod
+    Properties:
+      RestApiId: !Ref SharedKeyAPI
+      StageName: "prod"
+
+  # IAM user for firmware uploads
+  FirmwareUploaderUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${ProductName}-firmware-uploader-shared-prod"
+      Policies:
+        - PolicyName: FirmwareUploadPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+
+  # Access key for uploader user
+  FirmwareUploaderAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref FirmwareUploaderUser
+
+  # Store credentials securely in Secrets Manager
+  UploaderCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProductName}-uploader-credentials-shared-prod"
+      Description: "S3 uploader credentials for firmware deployment"
+      SecretString: !Sub |
+        {
+          "AccessKeyId": "${FirmwareUploaderAccessKey}",
+          "SecretAccessKey": "${FirmwareUploaderAccessKey.SecretAccessKey}",
+          "BucketName": "${FirmwareBucket}",
+          "SharedKey": "${SharedKey}",
+          "Region": "${AWS::Region}"
+        }
+
+Outputs:
+  FirmwareBucketName:
+    Description: "Name of the firmware storage bucket"
+    Value: !Ref FirmwareBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-FirmwareBucket"
+
+  APIGatewayURL:
+    Description: "API Gateway URL for key-protected access"
+    Value: !Sub "https://${SharedKeyAPI}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-APIURL"
+
+  ManifestURL:
+    Description: "Base URL for firmware manifest (OTA module will automatically append ?key=SHARED_KEY)"
+    Value: !Sub "https://${SharedKeyAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/manifest.json"
+    Export:
+      Name: !Sub "${AWS::StackName}-ManifestURL"
+
+  UploaderCredentialsSecretArn:
+    Description: "ARN of Secrets Manager secret containing uploader credentials and shared key"
+    Value: !Ref UploaderCredentialsSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-UploaderCredentials"
+
+  UploaderCredentialsRetrievalCommand:
+    Description: "AWS CLI command to retrieve uploader credentials"
+    Value: !Sub "aws secretsmanager get-secret-value --secret-id ${UploaderCredentialsSecret} --query SecretString --output text | jq"
+
+  ProductName:
+    Description: "Product name used in this deployment"
+    Value: !Ref ProductName
+
+  SetupInstructions:
+    Description: "Next steps for setup"
+    Value: !Sub |
+      PRODUCTION MODE - Lambda validates shared key and returns presigned S3 URLs
+
+      1. Upload your manifest.json and firmware files to the bucket:
+         aws s3 cp manifest.json s3://${FirmwareBucket}/
+         aws s3 cp firmware.bin s3://${FirmwareBucket}/firmware/v1.0.0.bin
+
+      2. Set build flags in platformio.ini:
+         -DOTA_AUTH_MODE=SHARED_KEY
+         -DOTA_SHARED_KEY="${SharedKey}"
+         -DOTA_MANIFEST_URL="https://${SharedKeyAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/manifest.json"
+
+      3. Build and deploy your firmware
+
+      Note: The OTA module automatically appends ?key=${SharedKey} to all requests.
+      Lambda validates the key and returns HTTP 302 redirects to presigned S3 URLs.

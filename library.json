@@ -1,0 +1,36 @@
+{
+  "name": "ota_update",
+  "version": "0.1.0",
+  "description": "Complete over-the-air firmware update system for ESP32 devices using the web_platform framework. Supports multiple authentication modes, semantic versioning, and enterprise deployment via AWS CloudFormation.",
+  "keywords": [
+    "ota",
+    "firmware",
+    "update",
+    "esp32",
+    "web",
+    "aws",
+    "cloudformation",
+    "authentication",
+    "versioning"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andrewmherren/ota_update.git"
+  },
+  "authors": [
+    {
+      "name": "Andrew Herren",
+      "url": "https://github.com/andrwemherren"
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/andrewmherren",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^6.20.0",
+    "web_platform_interface": "https://github.com/andrewmherren/web_platform_interface.git#cpp_arduino"
+  },
+  "frameworks": "*",
+  "platforms": [
+    "espressif32"
+  ]
+}
