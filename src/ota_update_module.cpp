@@ -24,7 +24,7 @@ OTAUpdateModule otaUpdateModule; // NOSONAR
 
 OTAUpdateModule::OTAUpdateModule()
     : platformProvider(nullptr), autoCheckInterval(3600), lastCheckTime(0),
-      autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK)
+      autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK), pendingInstall(false)
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
       ,
       httpsCapable(false)
@@ -44,7 +44,7 @@ OTAUpdateModule::OTAUpdateModule()
 
 OTAUpdateModule::OTAUpdateModule(IWebPlatformProvider *provider)
     : platformProvider(provider), autoCheckInterval(3600), lastCheckTime(0),
-      autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK)
+      autoCheckEnabled(OTA_DEFAULT_AUTO_CHECK), pendingInstall(false)
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
       ,
       httpsCapable(false)
@@ -88,6 +88,15 @@ void OTAUpdateModule::begin(const JsonVariant &config) {
 }
 
 void OTAUpdateModule::handle() {
+  // Process pending installation (async start)
+  if (pendingInstall && currentStatus.state == UpdateStatus::IDLE) {
+    DEBUG_PRINTF("OTA: Processing pending install for version: %s\n",
+                 pendingInstallVersion.c_str());
+    pendingInstall = false;
+    installUpdate(pendingInstallVersion);
+    return; // Exit after starting install to avoid timeout check
+  }
+
   // Check for stuck operations (timeout after 5 minutes)
   if (currentStatus.state != UpdateStatus::IDLE &&
       currentStatus.state != UpdateStatus::COMPLETE &&

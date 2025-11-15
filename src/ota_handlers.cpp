@@ -108,14 +108,37 @@ void OTAUpdateModule::installUpdateHandler(RequestT &req, ResponseT &res) {
     }
   }
 
-  bool success = installUpdate(targetVersion);
+  // Check if we're already busy
+  if (currentStatus.state != UpdateStatus::IDLE) {
+    respondJson(res, [this](JsonObject &json) {
+      json["success"] = false;
+      json["message"] = "Update operation already in progress";
+    });
+    return;
+  }
 
-  respondJson(res, [this, success](JsonObject &json) {
-    json["success"] = success;
-    json["message"] =
-        success ? "Update installation started" : currentStatus.message;
-    if (success) {
-      json["target_version"] = selectedVersion.version.c_str();
+  // Check if manifest is available
+  if (!manifestData.isValid()) {
+    respondJson(res, [](JsonObject &json) {
+      json["success"] = false;
+      json["message"] = "No manifest available. Run check for updates first.";
+    });
+    return;
+  }
+
+  // Queue the installation for async processing
+  pendingInstallVersion = targetVersion;
+  pendingInstall = true;
+
+  DEBUG_PRINTF("OTA: Installation queued for version: %s\n",
+               targetVersion.isEmpty() ? "latest" : targetVersion.c_str());
+
+  // Return immediately - installation will happen in handle() loop
+  respondJson(res, [targetVersion](JsonObject &json) {
+    json["success"] = true;
+    json["message"] = "Update installation queued";
+    if (!targetVersion.isEmpty()) {
+      json["target_version"] = targetVersion.c_str();
     }
   });
 }

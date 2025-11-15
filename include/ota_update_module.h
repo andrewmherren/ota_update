@@ -1,19 +1,20 @@
 #ifndef OTA_UPDATE_MODULE_H
 #define OTA_UPDATE_MODULE_H
 
-#include <Arduino.h>
-#include <ArduinoJson.h>
-#include <interface/auth_types.h>
-#include <interface/request_response_types.h>
-#include <interface/openapi_factory.h>
-#include <interface/openapi_types.h>
-#include <interface/utils/route_variant.h>
-#include <interface/web_module_interface.h>
-#include <web_platform_interface.h>
-#include <utility>
 #include "ota_core.h"
 #include "ota_version.h"
 #include "version_autogen.h"
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <interface/auth_types.h>
+#include <interface/openapi_factory.h>
+#include <interface/openapi_types.h>
+#include <interface/request_response_types.h>
+#include <interface/utils/route_variant.h>
+#include <interface/web_module_interface.h>
+#include <utility>
+#include <web_platform_interface.h>
+
 
 // Compile-time check: ensure version was injected
 #ifndef WEB_MODULE_VERSION_STR
@@ -27,10 +28,12 @@
 #include <esp_ota_ops.h>
 
 // Storage APIs from web_platform (available in ESP32 builds with full platform)
-// These are only used in loadStoredConfig(), saveConfig(), and storeUpdateHistory()
-#include <storage/storage_manager.h>
-#include <storage/query_builder.h>
+// These are only used in loadStoredConfig(), saveConfig(), and
+// storeUpdateHistory()
 #include <storage/database_driver_interface.h>
+#include <storage/query_builder.h>
+#include <storage/storage_manager.h>
+
 #endif
 
 // OTA Authentication modes (build-time selection)
@@ -85,7 +88,7 @@ struct UpdateStatus {
 
 /**
  * @brief OTA Update Module - Over-the-air firmware update system
- * 
+ *
  * Provides secure OTA updates with semantic versioning, multiple authentication
  * modes, and comprehensive update management via web interface and REST API.
  */
@@ -93,10 +96,10 @@ class OTAUpdateModule : public IWebModule {
 public:
   // Default constructor - uses global provider instance
   OTAUpdateModule();
-  
+
   // Optional constructor for dependency injection (tests)
   explicit OTAUpdateModule(IWebPlatformProvider *provider);
-  
+
   ~OTAUpdateModule() override = default;
 
   // Module lifecycle
@@ -121,7 +124,8 @@ public:
   String getCurrentVersion() const { return currentVersion; }
 
   // Configuration methods (manifest URL removed - now compile-time)
-  void setAutoCheckInterval(uint32_t seconds); // Temporary change only (not persisted)
+  void setAutoCheckInterval(
+      uint32_t seconds); // Temporary change only (not persisted)
   void setProgressCallback(ProgressCallback callback);
 
 private:
@@ -156,6 +160,8 @@ private:
   UpdateStatus currentStatus;
   ManifestData manifestData; // Parsed manifest with available versions
   FirmwareVersion selectedVersion;
+  String pendingInstallVersion; // Version to install on next handle() call
+  bool pendingInstall;          // Flag to trigger async installation
 
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
   // HTTP client - only available on Arduino/ESP32

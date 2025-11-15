@@ -237,15 +237,16 @@ class OTAUpdateManager {
             this.updateProgressDisplay(data);
             
             // Stop polling if installation is complete or failed
-            if (data.state === 3 || data.state === 4 || data.state === 0) { // COMPLETE, ERROR, or IDLE
+            // States: 0=IDLE, 1=CHECKING, 2=DOWNLOADING, 3=INSTALLING, 4=COMPLETE, 5=ERROR
+            if (data.state === 4 || data.state === 5 || data.state === 0) { // COMPLETE, ERROR, or IDLE
                 this.stopProgressPolling();
                 
-                if (data.state === 3) { // COMPLETE
+                if (data.state === 4) { // COMPLETE
                     UIUtils.showAlert('Firmware update completed! Device is rebooting...', 'success');
                     setTimeout(() => {
                         window.location.reload();
                     }, 5000);
-                } else if (data.state === 4) { // ERROR
+                } else if (data.state === 5) { // ERROR
                     this.hideProgressCard();
                     UIUtils.showAlert('Firmware update failed: ' + data.message, 'error');
                     await this.refreshStatus();
@@ -295,10 +296,11 @@ class OTAUpdateManager {
         // Update status
         const statusEl = document.getElementById('update-status');
         if (statusEl) {
-            const stateNames = ['Idle', 'Checking', 'Downloading', 'Installing', 'Complete', 'Error'];
-            const stateClasses = ['idle', 'checking', 'downloading', 'installing', 'complete', 'error'];
+            // States: 0=IDLE, 1=CHECKING, 2=DOWNLOADING, 3=INSTALLING, 4=COMPLETE, 5=ERROR, 6=ROLLBACK
+            const stateNames = ['Idle', 'Checking', 'Downloading', 'Installing', 'Complete', 'Error', 'Rollback'];
+            const stateClasses = ['idle', 'checking', 'downloading', 'installing', 'complete', 'error', 'rollback'];
             
-            statusEl.className = 'status-' + stateClasses[data.state] || 'idle';
+            statusEl.className = 'status-' + (stateClasses[data.state] || 'idle');
             statusEl.textContent = stateNames[data.state] || 'Unknown';
         }
 
@@ -380,13 +382,17 @@ class OTAUpdateManager {
 
         if (progressMessage) {
             // Add phase-specific messaging based on state
+            // States: 0=IDLE, 1=CHECKING, 2=DOWNLOADING, 3=INSTALLING, 4=COMPLETE, 5=ERROR
             let message = data.message || 'Processing...';
             if (data.state === 2) {
                 // DOWNLOADING state
                 message = `Downloading firmware... ${percentage}%`;
             } else if (data.state === 3) {
-                // INSTALLING state
+                // INSTALLING state  
                 message = 'Installing firmware... Please wait';
+            } else if (data.state === 4) {
+                // COMPLETE state
+                message = 'Update complete! Rebooting...';
             }
             progressMessage.textContent = message;
         }
