@@ -95,6 +95,17 @@ void OTAUpdateModule::begin(const JsonVariant &config) {
 }
 
 void OTAUpdateModule::handle() {
+  // Check for stuck operations (timeout after 5 minutes)
+  if (currentStatus.state != UpdateStatus::IDLE &&
+      currentStatus.state != UpdateStatus::COMPLETE &&
+      currentStatus.startTime > 0 &&
+      (millis() - currentStatus.startTime) > 300000) { // 5 minutes
+    DEBUG_PRINTLN("OTA: Operation timeout - resetting to IDLE");
+    updateStatus(UpdateStatus::ERROR, "Operation timed out");
+    delay(100); // Brief delay to allow error state to be read
+    updateStatus(UpdateStatus::IDLE, "Ready");
+  }
+
   // Handle automatic update checks
   if (autoCheckEnabled &&
       (millis() - lastCheckTime) > (autoCheckInterval * 1000UL)) {

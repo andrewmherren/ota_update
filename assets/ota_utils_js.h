@@ -108,6 +108,15 @@ class OTAUpdateManager {
             button.textContent = 'Installing...';
         }
 
+        // Show progress card immediately
+        this.showProgressCard();
+        this.updateProgressDisplay({
+            state: 2, // DOWNLOADING
+            progress: 0,
+            total: 100,
+            message: 'Starting firmware download...'
+        });
+
         try {
             const response = await AuthUtils.fetch(this.baseUrl + '/api/install', {
                 method: 'POST',
@@ -122,6 +131,7 @@ class OTAUpdateManager {
                 this.startProgressPolling();
             } else {
                 UIUtils.showAlert('Installation failed: ' + result.message, 'error');
+                this.hideProgressCard();
                 if (button) {
                     button.disabled = false;
                     button.textContent = 'Install Latest';
@@ -131,6 +141,7 @@ class OTAUpdateManager {
         } catch (error) {
             console.error('Failed to start installation:', error);
             UIUtils.showAlert('Failed to start installation', 'error');
+            this.hideProgressCard();
             if (button) {
                 button.disabled = false;
                 button.textContent = 'Install Latest';
@@ -142,6 +153,15 @@ class OTAUpdateManager {
         if (!confirm(`Are you sure you want to install firmware version ${version}? The device will reboot.`)) {
             return;
         }
+
+        // Show progress card immediately
+        this.showProgressCard();
+        this.updateProgressDisplay({
+            state: 2, // DOWNLOADING
+            progress: 0,
+            total: 100,
+            message: `Starting firmware ${version} download...`
+        });
 
         try {
             const response = await AuthUtils.fetch(this.baseUrl + '/api/install', {
@@ -157,11 +177,13 @@ class OTAUpdateManager {
                 this.startProgressPolling();
             } else {
                 UIUtils.showAlert('Installation failed: ' + result.message, 'error');
+                this.hideProgressCard();
             }
 
         } catch (error) {
             console.error('Failed to install version:', error);
             UIUtils.showAlert('Failed to start installation', 'error');
+            this.hideProgressCard();
         }
     }
 

@@ -125,13 +125,24 @@ cat > manifest.json << 'EOF'
 EOF
 
 # Retrieve uploader credentials from Secrets Manager (created by CloudFormation)
-aws secretsmanager get-secret-value \
-  --secret-id my-device-uploader-credentials-dev \
-  --query SecretString --output text | jq
+# These are restricted IAM credentials with upload-only access to the firmware bucket
+# Using a named profile avoids interfering with your existing AWS credentials (e.g., SSO)
 
-# Upload to S3
-aws s3 cp firmware.bin s3://your-bucket/firmware/v1.1.0.bin
-aws s3 cp manifest.json s3://your-bucket/manifest.json
+# For Linux/Mac (bash):
+SECRET=$(aws secretsmanager get-secret-value \
+  --secret-id my-device-uploader-credentials-dev \
+  --query SecretString --output text)
+aws configure set aws_access_key_id $(echo $SECRET | jq -r '.AccessKeyId') --profile ota-uploader
+aws configure set aws_secret_access_key $(echo $SECRET | jq -r '.SecretAccessKey') --profile ota-uploader
+
+# For Windows (PowerShell):
+$secret = aws secretsmanager get-secret-value --secret-id my-device-uploader-credentials-dev --query SecretString --output text | ConvertFrom-Json
+aws configure set aws_access_key_id $secret.AccessKeyId --profile ota-uploader
+aws configure set aws_secret_access_key $secret.SecretAccessKey --profile ota-uploader
+
+# Upload to S3 (using the ota-uploader profile)
+aws s3 cp firmware.bin s3://your-bucket/firmware/v1.1.0.bin --profile ota-uploader
+aws s3 cp manifest.json s3://your-bucket/manifest.json --profile ota-uploader
 
 # For CloudFront (public-prod), invalidate cache after upload
 aws cloudfront create-invalidation --distribution-id YOUR_DIST_ID --paths "/*"
