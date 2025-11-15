@@ -475,9 +475,6 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
   bool writeError = false;
   int lastReportedProgress = -1;
 
-  DEBUG_PRINTF("OTA: Starting download loop, contentLength=%d\n",
-               contentLength);
-
   while (httpClient.connected() && written < (size_t)contentLength &&
          !writeError) {
     size_t available = stream->available();
@@ -504,8 +501,6 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
       // Update status when progress percentage changes
       if (progress != lastReportedProgress) {
-        DEBUG_PRINTF("OTA: Download progress: %d%% (%zu/%d bytes)\n", progress,
-                     written, contentLength);
         updateStatus(UpdateStatus::DOWNLOADING,
                      "Downloading firmware... " + String(progress) + "%",
                      progress);
@@ -515,9 +510,6 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
       delay(10); // Small delay if no data available
     }
   }
-
-  DEBUG_PRINTF("OTA: Download loop complete, written=%zu, contentLength=%d\n",
-               written, contentLength);
 
   httpClient.end();
 

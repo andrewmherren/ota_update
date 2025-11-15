@@ -138,7 +138,7 @@ class OTAUpdateManager {
             const result = await response.json();
 
             if (result.success) {
-                UIUtils.showAlert('Firmware installation started', 'success');
+                // Installation queued - start polling to show progress
                 this.startProgressPolling();
             } else {
                 UIUtils.showAlert('Installation failed: ' + result.message, 'error');
@@ -195,7 +195,7 @@ class OTAUpdateManager {
             const result = await response.json();
 
             if (result.success) {
-                UIUtils.showAlert(`Installing firmware ${version}...`, 'success');
+                // Installation queued - start polling to show progress
                 this.startProgressPolling();
             } else {
                 UIUtils.showAlert('Installation failed: ' + result.message, 'error');
@@ -233,7 +233,6 @@ class OTAUpdateManager {
             const response = await AuthUtils.fetch(this.baseUrl + '/api/progress');
             const data = await response.json();
             
-            console.log('OTA Progress Update:', data);
             this.updateProgressDisplay(data);
             
             // Stop polling if installation is complete or failed

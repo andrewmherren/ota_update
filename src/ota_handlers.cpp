@@ -153,10 +153,6 @@ void OTAUpdateModule::progressApiHandler(RequestT &req, ResponseT &res) {
     if (currentStatus.startTime > 0) {
       json["elapsed_time"] = (millis() - currentStatus.startTime) / 1000;
     }
-
-    DEBUG_PRINTF("OTA Progress API: state=%d, progress=%d, total=%d, msg=%s\n",
-                 (int)currentStatus.state, currentStatus.progress,
-                 currentStatus.total, currentStatus.message.c_str());
   });
 }
 
