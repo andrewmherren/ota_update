@@ -13,7 +13,6 @@ const char OTA_STATUS_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
     <link rel="icon" href="/assets/favicon.ico" sizes="any">
     <script src="/assets/web-platform-utils.js"></script>
-    <script src="/assets/ota-utils.js"></script>
     <title>OTA Update Manager - {{DEVICE_NAME}}</title>
 </head>
 <body>
