@@ -610,7 +610,24 @@ void OTAUpdateModule::storeUpdateHistory(const String &version, bool success,
     String updateId = String(millis());
     DynamicJsonDocument doc(512);
     doc["version"] = version;
-    doc["installed_at"] = millis() / 1000;
+
+    // Get Unix timestamp (seconds since epoch) from platform
+    // Use platform's time synchronization (NTP) for reliable timestamps
+    unsigned long timestamp = 0;
+    if (platformProvider) {
+      timestamp = platformProvider->getPlatform().getCurrentTime();
+      if (timestamp == 0 ||
+          !platformProvider->getPlatform().isTimeSynchronized()) {
+        // Time not synchronized yet, use millis as fallback
+        timestamp = millis() / 1000;
+        DEBUG_PRINTF("OTA: Time not synchronized, using millis fallback\n");
+      }
+    } else {
+      // No platform provider (shouldn't happen), use millis
+      timestamp = millis() / 1000;
+    }
+    doc["installed_at"] = (uint32_t)timestamp;
+
     doc["success"] = success;
     doc["previous_version"] = currentVersion;
     if (!error.isEmpty()) {
