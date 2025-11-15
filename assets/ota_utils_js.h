@@ -98,9 +98,20 @@ class OTAUpdateManager {
     }
 
     async installLatest() {
-        if (!confirm('Are you sure you want to install the latest firmware update? The device will reboot.')) {
-            return;
+        let confirmed = false;
+        if (window.UIUtils && UIUtils.showConfirm) {
+            await new Promise(resolve => {
+                UIUtils.showConfirm(
+                    'Install Firmware',
+                    'Are you sure you want to install the latest firmware update? The device will reboot.',
+                    () => { confirmed = true; resolve(); },
+                    () => { confirmed = false; resolve(); }
+                );
+            });
+        } else {
+            confirmed = confirm('Are you sure you want to install the latest firmware update? The device will reboot.');
         }
+        if (!confirmed) return;
 
         const button = document.getElementById('install-latest');
         if (button) {
@@ -150,9 +161,20 @@ class OTAUpdateManager {
     }
 
     async installSpecificVersion(version) {
-        if (!confirm(`Are you sure you want to install firmware version ${version}? The device will reboot.`)) {
-            return;
+        let confirmed = false;
+        if (window.UIUtils && UIUtils.showConfirm) {
+            await new Promise(resolve => {
+                UIUtils.showConfirm(
+                    'Install Specific Version',
+                    `Are you sure you want to install firmware version ${version}? The device will reboot.`,
+                    () => { confirmed = true; resolve(); },
+                    () => { confirmed = false; resolve(); }
+                );
+            });
+        } else {
+            confirmed = confirm(`Are you sure you want to install firmware version ${version}? The device will reboot.`);
         }
+        if (!confirmed) return;
 
         // Show progress card immediately
         this.showProgressCard();
@@ -332,20 +354,29 @@ class OTAUpdateManager {
         const progressText = document.getElementById('progress-text');
         const progressMessage = document.getElementById('progress-message');
 
-        if (progressFill && data.total > 0) {
-            const percentage = Math.round((data.progress / data.total) * 100);
+        // data.progress is already a percentage (0-100), data.total is firmware size in bytes
+        // We use data.progress directly for the UI percentage
+        const percentage = Math.min(100, Math.max(0, Math.round(data.progress)));
+
+        if (progressFill) {
             progressFill.style.width = percentage + '%';
         }
 
-        if (progressText && data.total > 0) {
-            const percentage = Math.round((data.progress / data.total) * 100);
+        if (progressText) {
             progressText.textContent = percentage + '%';
-        } else if (progressText) {
-            progressText.textContent = 'Working...';
         }
 
         if (progressMessage) {
-            progressMessage.textContent = data.message || 'Processing...';
+            // Add phase-specific messaging based on state
+            let message = data.message || 'Processing...';
+            if (data.state === 2) {
+                // DOWNLOADING state
+                message = `Downloading firmware... ${percentage}%`;
+            } else if (data.state === 3) {
+                // INSTALLING state
+                message = 'Installing firmware... Please wait';
+            }
+            progressMessage.textContent = message;
         }
     }
 

@@ -323,9 +323,20 @@ bool OTAUpdateModule::installUpdate(const String &version) {
   }
 
   if (!manifestData.isValid()) {
+    DEBUG_PRINTLN(
+        "OTA: Manifest not loaded - attempting automatic fetch before install");
+#if defined(ARDUINO) || defined(ESP_PLATFORM)
+    bool fetched = fetchManifest();
+    if (!fetched || !manifestData.isValid()) {
+      updateStatus(UpdateStatus::ERROR,
+                   "No manifest available. Run check for updates first.");
+      return false;
+    }
+#else
     updateStatus(UpdateStatus::ERROR,
                  "No manifest available. Run check for updates first.");
     return false;
+#endif
   }
 
   // Use core logic to select the best version (returns version string)
@@ -370,6 +381,9 @@ bool OTAUpdateModule::installUpdate(const String &version) {
 
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
 bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
+  // Phase 1: Downloading (state = DOWNLOADING). We stream and write directly to
+  // flash, but we still present this to the UI as a download phase so users see
+  // progress before we switch to an installation/finalization phase.
   updateStatus(
       UpdateStatus::DOWNLOADING,
       "Downloading firmware " + String(version.version.c_str()) + "...", 0);
@@ -443,7 +457,9 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
     return false;
   }
 
-  updateStatus(UpdateStatus::INSTALLING, "Installing firmware...", 0);
+  // Keep reporting as DOWNLOADING while streaming bytes. Switch to INSTALLING
+  // only after the full image has been received and verified, right before
+  // finalizing/activating the new partition.
 
   // Initialize SHA256 context for verification
   mbedtls_sha256_context sha256_ctx;
@@ -482,8 +498,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
       // Throttle status updates to avoid flooding
       if (progress != currentStatus.progress) {
-        updateStatus(UpdateStatus::INSTALLING,
-                     "Installing firmware... " + String(progress) + "%",
+        updateStatus(UpdateStatus::DOWNLOADING,
+                     "Downloading firmware... " + String(progress) + "%",
                      progress);
       }
     } else {
@@ -514,7 +530,7 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
     return false;
   }
 
-  // Finalize SHA256 hash
+  // Phase 2: Completed data transfer; finalize SHA256 hash
   uint8_t hash[32];
   mbedtls_sha256_finish(&sha256_ctx, hash);
   mbedtls_sha256_free(&sha256_ctx);
@@ -541,7 +557,8 @@ bool OTAUpdateModule::downloadAndInstall(const FirmwareVersion &version) {
 
   DEBUG_PRINTLN("OTA: SHA256 verification passed");
 
-  // Finalize update
+  // Phase 3: Installation / finalization
+  updateStatus(UpdateStatus::INSTALLING, "Installing firmware...", 95);
   if (!Update.end(true)) { // true = set new firmware as boot partition
     String errorMsg =
         "Update finalization failed: " + String(Update.errorString());
@@ -667,8 +684,13 @@ void OTAUpdateModule::installSpecificHandler(WebRequest &req,
 
   respondJson(res, [&](JsonObject &json) {
     json["success"] = success;
-    json["message"] =
-        success ? "Installing version " + version : currentStatus.message;
+    if (success) {
+      json["message"] = "Download started for version " + version;
+      json["state"] = static_cast<int>(currentStatus.state); // DOWNLOADING
+    } else {
+      json["error"] = currentStatus.message;
+      json["state"] = static_cast<int>(currentStatus.state);
+    }
   });
 }
 #endif
