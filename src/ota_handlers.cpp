@@ -17,6 +17,13 @@ void OTAUpdateModule::statusApiHandler(RequestT &req, ResponseT &res) {
     json["progress"] = currentStatus.progress;
     json["total"] = currentStatus.total;
 
+    // Include last check timestamp (seconds since device boot)
+    if (lastCheckTime > 0) {
+      json["last_check"] = (uint32_t)(lastCheckTime / 1000);
+    } else {
+      json["last_check"] = 0; // Never checked
+    }
+
     if (!manifestData.latestVersion.empty()) {
       json["latest_version"] = manifestData.latestVersion.c_str();
       json["updates_available"] = manifestData.versions.size();
@@ -70,9 +77,7 @@ void OTAUpdateModule::manifestApiHandler(RequestT &req, ResponseT &res) {
 void OTAUpdateModule::historyApiHandler(RequestT &req, ResponseT &res) {
   JsonArray history = getUpdateHistory();
 
-  respondJson(res, [&history](JsonObject &json) { 
-    json["history"] = history; 
-  });
+  respondJson(res, [&history](JsonObject &json) { json["history"] = history; });
 }
 
 void OTAUpdateModule::checkUpdatesHandler(RequestT &req, ResponseT &res) {
@@ -81,8 +86,9 @@ void OTAUpdateModule::checkUpdatesHandler(RequestT &req, ResponseT &res) {
   respondJson(res, [this, success](JsonObject &json) {
     json["success"] = success;
     if (success) {
-      json["message"] = manifestData.versions.size() > 0 ? "Updates found"
-                                                         : "No updates available";
+      json["message"] = manifestData.versions.size() > 0
+                            ? "Updates found"
+                            : "No updates available";
       json["updates_available"] = manifestData.versions.size();
     } else {
       json["message"] = currentStatus.message;
@@ -133,11 +139,12 @@ void OTAUpdateModule::rollbackHandler(RequestT &req, ResponseT &res) {
   // SECURITY FIX: Use esp_ota_get_next_update_partition() instead of
   // esp_ota_get_last_invalid_partition() to get the previous partition
   const esp_partition_t *current_partition = esp_ota_get_running_partition();
-  const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t *update_partition =
+      esp_ota_get_next_update_partition(NULL);
 
   if (update_partition != nullptr && update_partition != current_partition) {
     esp_err_t err = esp_ota_set_boot_partition(update_partition);
-    
+
     if (err == ESP_OK) {
       respondJson(res, [](JsonObject &json) {
         json["success"] = true;
@@ -150,14 +157,16 @@ void OTAUpdateModule::rollbackHandler(RequestT &req, ResponseT &res) {
       res.setStatus(500);
       respondJson(res, [err](JsonObject &json) {
         json["success"] = false;
-        json["error"] = "Failed to set boot partition: " + String(esp_err_to_name(err));
+        json["error"] =
+            "Failed to set boot partition: " + String(esp_err_to_name(err));
       });
     }
   } else {
     res.setStatus(400);
     respondJson(res, [](JsonObject &json) {
       json["success"] = false;
-      json["error"] = "No valid previous firmware partition available for rollback";
+      json["error"] =
+          "No valid previous firmware partition available for rollback";
     });
   }
 }

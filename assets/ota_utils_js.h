@@ -301,6 +301,17 @@ class OTAUpdateManager {
             statusEl.textContent = stateNames[data.state] || 'Unknown';
         }
 
+        // Update last check time
+        const lastCheckEl = document.getElementById('last-check');
+        if (lastCheckEl) {
+            if (data.last_check && data.last_check > 0) {
+                const checkDate = new Date(data.last_check * 1000);
+                lastCheckEl.textContent = this.formatRelativeTime(data.last_check);
+            } else {
+                lastCheckEl.textContent = 'Never';
+            }
+        }
+
         // Update available updates count
         const availableEl = document.getElementById('updates-available');
         if (availableEl) {
@@ -319,7 +330,7 @@ class OTAUpdateManager {
         if (!container) return;
 
         if (!versions || versions.length === 0) {
-            container.innerHTML = '<p>No updates available.</p>';
+            container.innerHTML = '<p>No versions available.</p>';
             return;
         }
 
@@ -437,6 +448,24 @@ class OTAUpdateManager {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    formatRelativeTime(timestampSeconds) {
+        const now = Date.now() / 1000; // Current time in seconds
+        const elapsed = now - timestampSeconds;
+        
+        if (elapsed < 60) {
+            return 'Just now';
+        } else if (elapsed < 3600) {
+            const minutes = Math.floor(elapsed / 60);
+            return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+        } else if (elapsed < 86400) {
+            const hours = Math.floor(elapsed / 3600);
+            return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+        } else {
+            const days = Math.floor(elapsed / 86400);
+            return `${days} day${days !== 1 ? 's' : ''} ago`;
+        }
     }
 }
 

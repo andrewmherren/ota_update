@@ -39,7 +39,7 @@ const char OTA_STATUS_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     <span id="last-check">Never</span>
                 </div>
                 <div class="status-item">
-                    <label>Updates Available:</label>
+                    <label>Available Versions:</label>
                     <span id="updates-available">0</span>
                 </div>
             </div>
@@ -57,9 +57,9 @@ const char OTA_STATUS_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             <div id="progress-message" class="progress-message">Preparing...</div>
         </div>
 
-        <!-- Available Updates -->
+        <!-- Available Versions -->
         <div class="status-card">
-            <h2>Available Updates</h2>
+            <h2>Available Versions</h2>
             <div class="update-actions">
                 <button id="check-updates" class="btn btn-primary">Check for Updates</button>
                 <button id="install-latest" class="btn btn-secondary" disabled>Install Latest</button>

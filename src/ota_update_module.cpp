@@ -66,19 +66,12 @@ void OTAUpdateModule::begin() {
 #if defined(ARDUINO) || defined(ESP_PLATFORM)
   // Check HTTPS capability
   httpsCapable = true; // ESP32 supports HTTPS
-
-  // Get current firmware info from ESP32
-  const esp_app_desc_t *appDesc = esp_ota_get_app_description();
-  if (appDesc && strlen(appDesc->version) > 0) {
-    currentVersion = String(appDesc->version);
-  } else {
-    // Fallback to build-time version
-    currentVersion = String(OTA_FIRMWARE_VERSION);
-  }
-#else
-  // In native tests, use build-time version
-  currentVersion = String(OTA_FIRMWARE_VERSION);
 #endif
+
+  // Always use build-time version as the primary source
+  // (esp_ota_get_app_description() returns ESP-IDF version, not firmware
+  // version)
+  currentVersion = String(OTA_FIRMWARE_VERSION);
 
   currentStatus.currentVersion = currentVersion;
 
