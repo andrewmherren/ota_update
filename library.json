@@ -27,7 +27,7 @@
   "homepage": "https://github.com/andrewmherren",
   "dependencies": {
     "bblanchon/ArduinoJson": "^6.20.0",
-    "web_platform_interface": "https://github.com/andrewmherren/web_platform_interface.git#cpp_arduino"
+    "web_platform_interface": "https://github.com/andrewmherren/web_platform_interface.git"
   },
   "frameworks": "*",
   "platforms": [
