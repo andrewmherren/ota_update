@@ -419,6 +419,14 @@ Please include:
 - Steps to reproduce the issue
 - CloudFormation template version (if infrastructure-related)
 
+## Related Projects
+
+- **[web_platform](https://github.com/andrewmherren/web_platform)**: Core WebPlatform implementation
+- **[web_platform_interface](https://github.com/andrewmherren/web_platform_interface)**: Core interface and testing library for WebPlatform ecosystem
+- **[maker_api](https://github.com/andrewmherren/maker_api)**: Interactive API explorer module
+- **[usb_pd_controller](https://github.com/andrewmherren/usb_pd_controller)**: USB-C Power Delivery control module
+- **[web_module_example](https://github.com/andrewmherren/web_module_example)**: Boilerplate template for creating custom WebPlatform modules
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
