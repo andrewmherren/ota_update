@@ -1,0 +1,113 @@
+# Pre-requisites:
+# - In repository settings -> Security -> Secrets and variables -> Actions:
+#    - Add SONAR_TOKEN secret with your SonarCloud token
+#    - Add SONAR_ORGANIZATION and SONAR_PROJECT_KEY as Variables
+name: SonarCloud Analysis
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: write
+
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python & PlatformIO
+        run: |
+          sudo apt update
+          # Minimal toolchain + gcovr + unzip/wget for scanners
+          sudo apt install -y gcc g++ make python3-pip unzip wget gcovr
+          pip3 install platformio
+
+      - name: Setup SonarScanner
+        run: |
+          wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip sonar-scanner-cli-5.0.1.3006-linux.zip
+          echo "$PWD/sonar-scanner-5.0.1.3006-linux/bin" >> $GITHUB_PATH
+
+      - name: Setup Build Wrapper
+        run: |
+          mkdir -p build-tools
+          cd build-tools
+          wget https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip build-wrapper-linux-x86.zip
+          chmod +x build-wrapper-linux-x86/build-wrapper-linux-x86-64
+          echo "BUILD_WRAPPER_PATH=$PWD/build-wrapper-linux-x86/build-wrapper-linux-x86-64" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+
+      - name: Build and test with build-wrapper
+        run: |
+          mkdir -p bw-output
+          mkdir -p test-results
+          $BUILD_WRAPPER_PATH --out-dir bw-output pio test -e test_native --junit-output-path test-results/results.xml || true
+
+      - name: Generate coverage (SonarQube generic)
+        run: |
+          gcovr --sonarqube sonarqube.xml \
+            --root $GITHUB_WORKSPACE \
+            --object-directory .pio/build/test_native \
+            --filter "^src/" --filter "^include/" \
+            --exclude-throw-branches \
+            --exclude-directories ".*libdeps.*" \
+            --exclude ".*FakeIt.*" \
+            --exclude ".*Arduino.*" \
+            --exclude ".*unity.*" \
+            --exclude "/usr/include/.*" \
+            --exclude-lines-by-pattern ".*#ifdef (ARDUINO|ESP_PLATFORM).*" \
+            --exclude-lines-by-pattern ".*#if defined\((ARDUINO|ESP_PLATFORM)\).*" \
+            --exclude-unreachable-branches
+
+      - name: Fix shallow clone for SonarCloud
+        run: |
+          git fetch --prune --unshallow || true
+          git fetch origin +refs/heads/main:refs/remotes/origin/main || true
+
+      - name: SonarCloud Scan
+        run: |
+          sonar-scanner \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
+            -Dsonar.sources=src,include \
+            -Dsonar.tests=test \
+            -Dsonar.exclusions=**/build-wrapper-dump.json \
+            -Dsonar.coverage.exclusions=**/test/**/* \
+            -Dsonar.cfamily.compile-commands=bw-output/compile_commands.json \
+            -Dsonar.coverageReportPaths=sonarqube.xml \
+            -Dsonar.cpp.file.suffixes=.cpp,.h,.hpp \
+            -Dsonar.c.file.suffixes=.c \
+            -Dsonar.verbose=false \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.working.directory=.scannerwork
+
+      - name: Publish test results to GitHub (show tests in Checks)
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: PlatformIO Tests
+          path: test-results/results.xml
+          reporter: java-junit
+
+      # Uncovered snippets generation removed
+
+  # Optional: Upload sonarqube.xml as an artifact for debugging
+  # - name: Upload coverage report
+  #   uses: actions/upload-artifact@v4
+  #   with:
+  #     name: coverage-report
+  #     path: sonarqube.xml

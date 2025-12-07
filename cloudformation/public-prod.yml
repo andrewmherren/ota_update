@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "OTA Infrastructure - PUBLIC mode with CloudFront CDN for production"
+
+Parameters:
+  ProductName:
+    Type: String
+    Description: Product identifier for firmware (used in bucket naming)
+    Default: "my-iot-device"
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
+Resources:
+  # S3 bucket for firmware storage
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProductName}-firmware-prod-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+          - Id: DeleteIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "HEAD"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # CloudFront Origin Access Control
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProductName}-firmware-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront distribution for global CDN
+  FirmwareCDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "CDN for ${ProductName} firmware distribution"
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: false
+            Headers: []
+          DefaultTTL: 3600
+          MaxTTL: 86400
+          MinTTL: 0
+          Compress: true
+        Enabled: true
+        PriceClass: PriceClass_100 # Use only US, Canada, and Europe edge locations
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FirmwareBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  # Bucket policy for CloudFront access
+  FirmwareBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FirmwareBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FirmwareCDN}"
+
+  # IAM user for firmware uploads
+  FirmwareUploaderUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${ProductName}-firmware-uploader-prod"
+      Policies:
+        - PolicyName: FirmwareUploadPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FirmwareCDN}"
+
+  # Access key for uploader user
+  FirmwareUploaderAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref FirmwareUploaderUser
+
+  # Store credentials securely in Secrets Manager
+  UploaderCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProductName}-uploader-credentials-prod"
+      Description: "S3 uploader credentials for firmware deployment"
+      SecretString: !Sub |
+        {
+          "AccessKeyId": "${FirmwareUploaderAccessKey}",
+          "SecretAccessKey": "${FirmwareUploaderAccessKey.SecretAccessKey}",
+          "BucketName": "${FirmwareBucket}",
+          "CDNDomain": "${FirmwareCDN.DomainName}",
+          "DistributionId": "${FirmwareCDN}",
+          "Region": "${AWS::Region}"
+        }
+
+Outputs:
+  FirmwareBucketName:
+    Description: "Name of the firmware storage bucket"
+    Value: !Ref FirmwareBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-FirmwareBucket"
+
+  CDNDomainName:
+    Description: "CloudFront CDN domain name for firmware distribution"
+    Value: !GetAtt FirmwareCDN.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CDNDomain"
+
+  CDNDistributionId:
+    Description: "CloudFront Distribution ID (for cache invalidation)"
+    Value: !Ref FirmwareCDN
+
+  ManifestURL:
+    Description: "URL for the firmware manifest file"
+    Value: !Sub "https://${FirmwareCDN.DomainName}/manifest.json"
+    Export:
+      Name: !Sub "${AWS::StackName}-ManifestURL"
+
+  UploaderCredentialsSecretArn:
+    Description: "ARN of Secrets Manager secret containing uploader credentials"
+    Value: !Ref UploaderCredentialsSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-UploaderCredentials"
+
+  UploaderCredentialsRetrievalCommand:
+    Description: "AWS CLI command to retrieve uploader credentials"
+    Value: !Sub "aws secretsmanager get-secret-value --secret-id ${UploaderCredentialsSecret} --query SecretString --output text | jq"
+
+  CloudFrontInvalidationCommand:
+    Description: "Command to invalidate CloudFront cache after uploading firmware"
+    Value: !Sub 'aws cloudfront create-invalidation --distribution-id ${FirmwareCDN} --paths "/*"'
+
+  ProductName:
+    Description: "Product name used in this deployment"
+    Value: !Ref ProductName
+
+  SetupInstructions:
+    Description: "Next steps for setup"
+    Value: |
+      1. Upload your manifest.json and firmware files to the bucket
+      2. Create CloudFront invalidation after updates: aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/*"
+      3. Set OTA_MANIFEST_URL build flag to the ManifestURL output
+      4. Set OTA_AUTH_MODE to PUBLIC_ACCESS
+      5. Build and deploy your firmware

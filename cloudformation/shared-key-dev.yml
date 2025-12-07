@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "OTA Infrastructure - SHARED_KEY mode for development (direct S3 access with key validation)"
+
+Parameters:
+  ProductName:
+    Type: String
+    Description: Product identifier for firmware (used in bucket naming)
+    Default: "my-iot-device"
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
+  SharedKey:
+    Type: String
+    Description: "Shared access key that devices will use"
+    MinLength: 8
+    MaxLength: 64
+    NoEcho: true
+    ConstraintDescription: "Must be 8-64 characters"
+
+Resources:
+  # S3 bucket for firmware storage
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProductName}-firmware-shared-dev-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "HEAD"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  # Simple public access policy for development
+  # NOTE: In dev mode, shared key is embedded in firmware but not enforced by AWS.
+  # This allows direct S3 access for easier development and testing.
+  # Use shared-key-prod.yml for Lambda-based key validation in production.
+  FirmwareBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FirmwareBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadAccessForDevelopment
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${FirmwareBucket.Arn}/*"
+
+  # IAM user for firmware uploads
+  FirmwareUploaderUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${ProductName}-firmware-uploader-shared-dev"
+      Policies:
+        - PolicyName: FirmwareUploadPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:PutObjectTagging
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+
+  # Access key for uploader user
+  FirmwareUploaderAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref FirmwareUploaderUser
+
+  # Store credentials securely in Secrets Manager
+  UploaderCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProductName}-uploader-credentials-shared-dev"
+      Description: "S3 uploader credentials for firmware deployment"
+      SecretString: !Sub |
+        {
+          "AccessKeyId": "${FirmwareUploaderAccessKey}",
+          "SecretAccessKey": "${FirmwareUploaderAccessKey.SecretAccessKey}",
+          "BucketName": "${FirmwareBucket}",
+          "SharedKey": "${SharedKey}",
+          "Region": "${AWS::Region}"
+        }
+
+Outputs:
+  FirmwareBucketName:
+    Description: "Name of the firmware storage bucket"
+    Value: !Ref FirmwareBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-FirmwareBucket"
+
+  BucketURL:
+    Description: "Direct S3 bucket URL (for development)"
+    Value: !Sub "https://${FirmwareBucket}.s3.${AWS::Region}.amazonaws.com"
+
+  ManifestURL:
+    Description: "URL for the firmware manifest file"
+    Value: !Sub "https://${FirmwareBucket}.s3.${AWS::Region}.amazonaws.com/manifest.json"
+    Export:
+      Name: !Sub "${AWS::StackName}-ManifestURL"
+
+  UploaderCredentialsSecretArn:
+    Description: "ARN of Secrets Manager secret containing uploader credentials and shared key"
+    Value: !Ref UploaderCredentialsSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-UploaderCredentials"
+
+  UploaderCredentialsRetrievalCommand:
+    Description: "AWS CLI command to retrieve uploader credentials"
+    Value: !Sub "aws secretsmanager get-secret-value --secret-id ${UploaderCredentialsSecret} --query SecretString --output text | jq"
+
+  ProductName:
+    Description: "Product name used in this deployment"
+    Value: !Ref ProductName
+
+  SetupInstructions:
+    Description: "Next steps for setup"
+    Value: !Sub |
+      DEVELOPMENT MODE - Direct S3 Access (Key in firmware but not validated by AWS)
+
+      1. Upload your manifest.json and firmware files to the bucket:
+         aws s3 cp manifest.json s3://${FirmwareBucket}/
+         aws s3 cp firmware.bin s3://${FirmwareBucket}/firmware/v1.0.0.bin
+
+      2. Set build flags in platformio.ini:
+         -DOTA_AUTH_MODE=SHARED_KEY
+         -DOTA_SHARED_KEY="${SharedKey}"
+         -DOTA_MANIFEST_URL="${FirmwareBucket}.s3.${AWS::Region}.amazonaws.com/manifest.json"
+
+      3. Build and deploy your firmware
+
+      Note: The shared key is embedded in firmware but AWS does not validate it in dev mode.
+      For production with key validation, use shared-key-prod.yml template.

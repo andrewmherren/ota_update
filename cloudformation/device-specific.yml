@@ -1,0 +1,579 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "OTA Infrastructure - DEVICE_SPECIFIC mode with device registry and validation"
+
+Parameters:
+  ProductName:
+    Type: String
+    Description: Product identifier for firmware (used in bucket naming)
+    Default: "my-iot-device"
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
+  Environment:
+    Type: String
+    Description: "Environment (dev, staging, prod)"
+    Default: "prod"
+    AllowedValues: ["dev", "staging", "prod"]
+
+Resources:
+  # S3 bucket for firmware storage
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProductName}-firmware-device-${Environment}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+          - Id: DeleteIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "HEAD"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # Device registry table
+  DeviceRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProductName}-device-registry-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  # Lambda function for device authentication
+  # This function validates device credentials and returns HTTP 302 redirects to presigned S3 URLs.
+  # Response format: 302 redirect (not JSON) - ESP32 HTTPClient automatically follows redirects.
+  # This is intentionally different from the admin API which returns JSON responses.
+  DeviceAuthFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProductName}-device-auth-${Environment}"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt DeviceAuthRole.Arn
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref FirmwareBucket
+          DEVICE_TABLE: !Ref DeviceRegistryTable
+          ENVIRONMENT: !Ref Environment
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import hashlib
+          import time
+          from datetime import datetime, timedelta
+
+          s3 = boto3.client('s3')
+          dynamodb = boto3.resource('dynamodb')
+
+          def lambda_handler(event, context):
+              """
+              Device authentication endpoint - returns HTTP 302 redirect to presigned S3 URL.
+              
+              ESP32 devices send credentials as query parameters:
+                ?device_id=ESP32-001&device_key=abc123&firmware_path=manifest.json
+              
+              Response: HTTP 302 with Location header (presigned S3 URL)
+              ESP32 HTTPClient automatically follows the redirect to download firmware.
+              """
+              try:
+                  # Handle CORS preflight
+                  if event.get('httpMethod') == 'OPTIONS':
+                      return cors_response(200, {})
+                  
+                  # Parse request body
+                  if event.get('body'):
+                      body = json.loads(event['body'])
+                      device_id = body.get('device_id')
+                      device_key = body.get('device_key')
+                      firmware_path = body.get('firmware_path', 'manifest.json')
+                  else:
+                      # Try query parameters
+                      query_params = event.get('queryStringParameters') or {}
+                      device_id = query_params.get('device_id')
+                      device_key = query_params.get('device_key')
+                      firmware_path = query_params.get('firmware_path', 'manifest.json')
+                  
+                  if not device_id or not device_key:
+                      return cors_response(400, {
+                          'error': 'Missing device_id or device_key'
+                      })
+                  
+                  # Validate device against registry
+                  device_table = dynamodb.Table(os.environ['DEVICE_TABLE'])
+                  
+                  try:
+                      response = device_table.get_item(Key={'device_id': device_id})
+                      if 'Item' not in response:
+                          return cors_response(401, {
+                              'error': 'Device not registered'
+                          })
+                      
+                      device = response['Item']
+                      
+                      # Check if device is active
+                      if not device.get('active', False):
+                          return cors_response(401, {
+                              'error': 'Device is inactive'
+                          })
+                      
+                      # Validate device key
+                      if device.get('device_key') != device_key:
+                          # Log failed attempt
+                          device_table.update_item(
+                              Key={'device_id': device_id},
+                              UpdateExpression='SET last_failed_auth = :timestamp, failed_attempts = if_not_exists(failed_attempts, :zero) + :one',
+                              ExpressionAttributeValues={
+                                  ':timestamp': int(time.time()),
+                                  ':zero': 0,
+                                  ':one': 1
+                              }
+                          )
+                          return cors_response(401, {
+                              'error': 'Invalid device key'
+                          })
+                      
+                      # Update last access
+                      device_table.update_item(
+                          Key={'device_id': device_id},
+                          UpdateExpression='SET last_access = :timestamp, access_count = if_not_exists(access_count, :zero) + :one',
+                          ExpressionAttributeValues={
+                              ':timestamp': int(time.time()),
+                              ':zero': 0,
+                              ':one': 1
+                          }
+                      )
+                      
+                      # Generate presigned URL
+                      bucket_name = os.environ['BUCKET_NAME']
+                      url = s3.generate_presigned_url(
+                          'get_object',
+                          Params={'Bucket': bucket_name, 'Key': firmware_path},
+                          ExpiresIn=3600  # 1 hour expiration
+                      )
+                      
+                      return cors_response(200, {
+                          'success': True,
+                          'firmware_url': url,
+                          'expires_at': (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+                          'device_info': {
+                              'device_id': device['device_id'],
+                              'device_type': device.get('device_type', 'unknown'),
+                              'firmware_channel': device.get('firmware_channel', 'stable')
+                          }
+                      })
+                      
+                  except Exception as db_error:
+                      print(f'Database error: {str(db_error)}')
+                      return cors_response(500, {
+                          'error': 'Database error'
+                      })
+                      
+              except Exception as e:
+                  print(f'Error: {str(e)}')
+                  return cors_response(500, {
+                      'error': 'Internal server error'
+                  })
+
+          def cors_response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+                      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+                      'Content-Type': 'application/json'
+                  },
+                  'body': json.dumps(body)
+              }
+
+  # Device registration function (for admin use)
+  # This function handles device management operations and returns JSON responses.
+  # Response format: JSON (200/201/400/500) - used by admin tools and scripts.
+  # Different from device auth endpoint which returns 302 redirects for firmware downloads.
+  DeviceRegistrationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProductName}-device-registration-${Environment}"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt DeviceAuthRole.Arn
+      Environment:
+        Variables:
+          DEVICE_TABLE: !Ref DeviceRegistryTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import secrets
+          import time
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+
+          def lambda_handler(event, context):
+              """
+              Device admin endpoint - returns JSON responses.
+              
+              Actions:
+                - register: Create new device with generated key
+                - list: Get all devices
+                - deactivate: Disable a device
+              
+              Response: JSON with operation results
+              """
+              try:
+                  # Handle CORS preflight
+                  if event.get('httpMethod') == 'OPTIONS':
+                      return cors_response(200, {})
+                  
+                  # Parse request body
+                  body = json.loads(event['body'])
+                  action = body.get('action')
+                  
+                  device_table = dynamodb.Table(os.environ['DEVICE_TABLE'])
+                  
+                  if action == 'register':
+                      device_id = body.get('device_id')
+                      device_type = body.get('device_type', 'esp32')
+                      firmware_channel = body.get('firmware_channel', 'stable')
+                      
+                      if not device_id:
+                          return cors_response(400, {'error': 'device_id required'})
+                      
+                      # Generate secure device key
+                      device_key = secrets.token_urlsafe(32)
+                      
+                      # Register device
+                      device_table.put_item(Item={
+                          'device_id': device_id,
+                          'device_key': device_key,
+                          'device_type': device_type,
+                          'firmware_channel': firmware_channel,
+                          'active': True,
+                          'registered_at': int(time.time()),
+                          'access_count': 0,
+                          'failed_attempts': 0
+                      })
+                      
+                      return cors_response(201, {
+                          'success': True,
+                          'device_id': device_id,
+                          'device_key': device_key,
+                          'message': 'Device registered successfully'
+                      })
+                  
+                  elif action == 'list':
+                      response = device_table.scan()
+                      devices = []
+                      for item in response.get('Items', []):
+                          devices.append({
+                              'device_id': item['device_id'],
+                              'device_type': item.get('device_type'),
+                              'firmware_channel': item.get('firmware_channel'),
+                              'active': item.get('active', False),
+                              'registered_at': item.get('registered_at'),
+                              'last_access': item.get('last_access'),
+                              'access_count': item.get('access_count', 0)
+                          })
+                      
+                      return cors_response(200, {
+                          'devices': devices
+                      })
+                  
+                  elif action == 'deactivate':
+                      device_id = body.get('device_id')
+                      if not device_id:
+                          return cors_response(400, {'error': 'device_id required'})
+                      
+                      device_table.update_item(
+                          Key={'device_id': device_id},
+                          UpdateExpression='SET active = :active',
+                          ExpressionAttributeValues={':active': False}
+                      )
+                      
+                      return cors_response(200, {
+                          'success': True,
+                          'message': f'Device {device_id} deactivated'
+                      })
+                  
+                  else:
+                      return cors_response(400, {'error': 'Invalid action'})
+                      
+              except Exception as e:
+                  print(f'Error: {str(e)}')
+                  return cors_response(500, {
+                      'error': 'Internal server error'
+                  })
+
+          def cors_response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+                      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+                      'Content-Type': 'application/json'
+                  },
+                  'body': json.dumps(body)
+              }
+
+  # IAM role for Lambda functions
+  DeviceAuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProductName}-device-auth-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource: !GetAtt DeviceRegistryTable.Arn
+
+  # API Gateway for device authentication
+  DeviceAuthAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${ProductName}-device-auth-api-${Environment}"
+      Description: "Device authentication API for OTA updates"
+
+  # Auth endpoint resource
+  DeviceAuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ParentId: !GetAtt DeviceAuthAPI.RootResourceId
+      PathPart: "auth"
+
+  # Auth endpoint methods
+  DeviceAuthMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ResourceId: !Ref DeviceAuthResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceAuthFunction.Arn}/invocations"
+
+  DeviceAuthOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ResourceId: !Ref DeviceAuthResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceAuthFunction.Arn}/invocations"
+
+  # Admin endpoint resource
+  DeviceAdminResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ParentId: !GetAtt DeviceAuthAPI.RootResourceId
+      PathPart: "admin"
+
+  # Admin endpoint methods
+  DeviceAdminMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ResourceId: !Ref DeviceAdminResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceRegistrationFunction.Arn}/invocations"
+
+  DeviceAdminOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      ResourceId: !Ref DeviceAdminResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceRegistrationFunction.Arn}/invocations"
+
+  # Permissions for API Gateway to invoke Lambda functions
+  AuthAPIGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DeviceAuthFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DeviceAuthAPI}/*/POST/auth"
+
+  AdminAPIGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DeviceRegistrationFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DeviceAuthAPI}/*/POST/admin"
+
+  # API Gateway deployment
+  DeviceAuthDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - DeviceAuthMethod
+      - DeviceAdminMethod
+    Properties:
+      RestApiId: !Ref DeviceAuthAPI
+      StageName: "prod"
+
+  # IAM user for firmware uploads
+  FirmwareUploaderUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${ProductName}-firmware-uploader-device-${Environment}"
+      Policies:
+        - PolicyName: FirmwareUploadPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${FirmwareBucket}/*"
+
+  # Access key for uploader user
+  FirmwareUploaderAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref FirmwareUploaderUser
+
+  # Store credentials securely in Secrets Manager
+  UploaderCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProductName}-uploader-credentials-device-${Environment}"
+      Description: "S3 uploader credentials for firmware deployment"
+      SecretString: !Sub |
+        {
+          "AccessKeyId": "${FirmwareUploaderAccessKey}",
+          "SecretAccessKey": "${FirmwareUploaderAccessKey.SecretAccessKey}",
+          "BucketName": "${FirmwareBucket}",
+          "Region": "${AWS::Region}"
+        }
+
+Outputs:
+  FirmwareBucketName:
+    Description: "Name of the firmware storage bucket"
+    Value: !Ref FirmwareBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-FirmwareBucket"
+
+  DeviceAuthAPIURL:
+    Description: "Device authentication API URL"
+    Value: !Sub "https://${DeviceAuthAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/auth"
+    Export:
+      Name: !Sub "${AWS::StackName}-DeviceAuthAPI"
+
+  DeviceAdminAPIURL:
+    Description: "Device admin API URL for device registration"
+    Value: !Sub "https://${DeviceAuthAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/admin"
+    Export:
+      Name: !Sub "${AWS::StackName}-DeviceAdminAPI"
+
+  DeviceRegistryTableName:
+    Description: "Name of the device registry DynamoDB table"
+    Value: !Ref DeviceRegistryTable
+    Export:
+      Name: !Sub "${AWS::StackName}-DeviceRegistryTable"
+
+  UploaderCredentialsSecretArn:
+    Description: "ARN of Secrets Manager secret containing uploader credentials"
+    Value: !Ref UploaderCredentialsSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-UploaderCredentials"
+
+  UploaderCredentialsRetrievalCommand:
+    Description: "AWS CLI command to retrieve uploader credentials"
+    Value: !Sub "aws secretsmanager get-secret-value --secret-id ${UploaderCredentialsSecret} --query SecretString --output text | jq"
+
+  ProductName:
+    Description: "Product name used in this deployment"
+    Value: !Ref ProductName
+
+  Environment:
+    Description: "Environment"
+    Value: !Ref Environment
+
+  SetupInstructions:
+    Description: "Next steps for setup"
+    Value: !Sub |
+      1. Register devices using the admin API:
+         curl -X POST ${DeviceAuthAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/admin \
+           -H "Content-Type: application/json" \
+           -d '{"action":"register","device_id":"ESP32-001","device_type":"esp32","firmware_channel":"stable"}'
+
+      2. Upload firmware to the bucket
+
+      3. Set build flags:
+         - OTA_AUTH_MODE=DEVICE_SPECIFIC  
+         - OTA_DEVICE_AUTH_URL=${DeviceAuthAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/auth
+
+      4. Program devices with their unique device_id and device_key
+
+      5. Build and deploy firmware
